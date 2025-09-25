@@ -271,19 +271,9 @@ def setup_warning_filters(verbose: bool = False):
     - Google Cloud deprecation warnings: Common in SDK updates, don't break functionality
     """
     if not verbose:
-        # Suppress the absl logging warning about log initialization
-        warnings.filterwarnings("ignore", message="All log messages before absl::InitializeLog")
-        warnings.filterwarnings("ignore", message=".*absl::InitializeLog.*", module="absl")
-
-        # Suppress ALTS credentials warnings (these are expected when running locally)
-        warnings.filterwarnings("ignore", message="ALTS creds ignored")
-        warnings.filterwarnings("ignore", message=".*alts_credentials.*")
-
-        # Suppress protobuf deprecation warnings (from google-cloud-aiplatform)
+        # Additional suppression for any warnings that slipped through early setup
         warnings.filterwarnings("ignore", message=".*including_default_value_fields.*", module="proto")
         warnings.filterwarnings("ignore", message=".*always_print_fields_with_no_presence.*", module="proto")
-
-        # Suppress common Google Cloud warnings that don't affect functionality
         warnings.filterwarnings("ignore", message=".*DeprecationWarning.*", module="google.cloud")
         warnings.filterwarnings("ignore", message=".*UserWarning.*", module="vertexai")
 
@@ -297,16 +287,9 @@ def setup_warning_filters(verbose: bool = False):
         # Also suppress specific noisy loggers that might still appear
         logging.getLogger("google.api_core").setLevel(logging.WARNING)
         logging.getLogger("google.auth.transport").setLevel(logging.WARNING)
-
-        # Configure Python's default logging to reduce noise
-        logging.basicConfig(level=logging.WARNING, format='%(levelname)s: %(message)s')
     else:
-        # In verbose mode, only suppress the most critical warnings but keep others for debugging
-        # Still suppress the most noisy ones that provide no value
-        warnings.filterwarnings("ignore", message="All log messages before absl::InitializeLog")
-        warnings.filterwarnings("ignore", message="ALTS creds ignored")
-
-        # Set logging to INFO level for more visibility while debugging
+        # In verbose mode, reset logging to show more information
+        logging.getLogger().setLevel(logging.INFO)
         logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(name)s: %(message)s')
 
 
