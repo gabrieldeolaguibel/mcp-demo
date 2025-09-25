@@ -3,10 +3,12 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import logging
 import os
 import sys
+import warnings
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, Set
 
 import requests
 from dotenv import load_dotenv
@@ -17,8 +19,6 @@ from vertexai.generative_models import (
     GenerativeModel,
     Tool,
     FunctionDeclaration,
-    ToolConfig,
-    Content,
     Part,
 )
 
@@ -143,6 +143,59 @@ def build_function_response_part(
     )
 
 
+# ------------------------- Tool call handling -------------------------
+async def handle_function_calls(
+    chat,
+    multi: MultiMCPClient,
+    initial_response,
+    tools: List[Tool],
+    *,
+    timeout: float,
+) -> Any:
+    """
+    Execute all model-proposed function calls until none remain, printing each
+    call and its result, then return the final model response.
+    """
+
+    response = initial_response
+    printed_calls: Set[Tuple[str, str]] = set()
+
+    while True:
+        proposed = extract_function_calls(response)
+        if not proposed:
+            return response
+
+        tasks = [
+            multi.call_tool(call.name, call.args, timeout=timeout, raise_on_error=False)
+            for call in proposed
+        ]
+        results = await asyncio.gather(*tasks)
+
+        response_parts: List[Part] = []
+
+        for call, result in zip(proposed, results):
+            call_key = (call.name, json.dumps(call.args, sort_keys=True))
+            if call_key not in printed_calls:
+                print(f"[Tool Call] {call.name}({json.dumps(call.args)})")
+                if result.get("is_error"):
+                    print(f"[Error] {result.get('content_text') or 'Tool error'}")
+                else:
+                    print(f"[Result] {json.dumps(result['data'], indent=2)}")
+                printed_calls.add(call_key)
+
+            payload = result.get("data")
+            if result.get("is_error") or payload is None:
+                payload = {
+                    "error": True,
+                    "message": result.get("content_text") or "Tool error",
+                    "structured_content": result.get("structured_content"),
+                }
+
+            response_parts.append(build_function_response_part(call.name, payload))
+
+        response = chat.send_message(response_parts, tools=tools)
+
+
 # ------------------------- Chat loop -------------------------
 
 async def chat_loop(
@@ -175,12 +228,6 @@ async def chat_loop(
         tools = [Tool(function_declarations=fn_decls)]
 
         # AUTO mode: model decides if/what to call (sequential or parallel)
-        tool_config = ToolConfig(
-            function_calling_config=ToolConfig.FunctionCallingConfig(
-                mode=ToolConfig.FunctionCallingConfig.Mode.AUTO
-            )
-        )
-
         print("\nReady. Type your prompt (or /exit):\n")
         while True:
             try:
@@ -193,85 +240,15 @@ async def chat_loop(
             if not user:
                 continue
 
-            # 1) Send user message with tools available
             resp = chat.send_message(user, tools=tools)
 
-            # 2) Did the model propose one or more function calls?
-            proposed = extract_function_calls(resp)
-
-            if not proposed:
-                # No tool call needed → just print the model text
-                print(resp.text or "")
-                continue
-
-            # 3) Execute all proposed calls (parallel supported)
-            # Each call.name is "<server>.<tool>"
-            tasks = [
-                multi.call_tool(call.name, call.args, timeout=timeout, raise_on_error=False)
-                for call in proposed
-            ]
-            results = await asyncio.gather(*tasks)
-
-            # Track printed tool calls to avoid duplication
-            printed_calls = set()
-            for call, result in zip(proposed, results):
-                call_key = (call.name, json.dumps(call.args, sort_keys=True))
-                if call_key not in printed_calls:
-                    print(f"[Tool Call] {call.name}({json.dumps(call.args)})")
-                    if result.get("is_error"):
-                        print(f"[Error] {result.get('content_text') or 'Tool error'}")
-                    else:
-                        print(f"[Result] {json.dumps(result['data'], indent=2)}")
-                    printed_calls.add(call_key)
-
-            # 4) Return ALL tool responses to the model in one follow-up message
-            # (Best practice when multiple calls are proposed in a single turn.)
-            response_parts: List[Part] = []
-            for call, result in zip(proposed, results):
-                payload = result["data"]
-                if result.get("is_error") or payload is None:
-                    payload = {
-                        "error": True,
-                        "message": result.get("content_text") or "Tool error",
-                        "structured_content": result.get("structured_content"),
-                    }
-                response_parts.append(build_function_response_part(call.name, payload))
-
-            # 5) Hand back the function responses + keep tools available (model may chain)
-            #    We attach multiple Content messages: the SDK accepts a list as multi-part turn.
-            final = chat.send_message(response_parts, tools=tools)
-
-            while True:
-                proposed = extract_function_calls(final)
-                if proposed:
-                    # Execute all proposed calls (parallel supported)
-                    tasks = [
-                        multi.call_tool(call.name, call.args, timeout=timeout, raise_on_error=False)
-                        for call in proposed
-                    ]
-                results = await asyncio.gather(*tasks)
-
-                # Build Parts with function responses and send them all back at once
-                response_parts = []
-                for call, result in zip(proposed, results):
-                    call_key = (call.name, json.dumps(call.args, sort_keys=True))
-                    if call_key not in printed_calls:
-                        print(f"[Tool Call] {call.name}({json.dumps(call.args)})")
-                        if result.get("is_error"):
-                            print(f"[Error] {call.name}('content_text') or 'Tool error')")
-                        else:
-                            print(f"[Result] {json.dumps(result['data'], indent=2)}")
-                        printed_calls.add(call_key)
-                    payload = result["data"]
-                    if result.get("is_error") or payload is None:
-                        payload = {
-                            "error": True,
-                            "message": result.get("content_text") or "Tool error",
-                            "structured_content": result.get("structured_content"),
-                        }
-                    response_parts.append(build_function_response_part(call.name, payload))
-                final = chat.send_message(response_parts, tools=tools)
-                continue
+            final = await handle_function_calls(
+                chat,
+                multi,
+                resp,
+                tools,
+                timeout=timeout,
+            )
 
             if hasattr(final, "text") and final.text:
                 print(final.text)
@@ -279,9 +256,62 @@ async def chat_loop(
                 print("[No text in final response]")
 
 
-def main():
-    load_dotenv()  # load .env values
+def setup_warning_filters(verbose: bool = False):
+    """
+    Configure warning filters to suppress noisy warnings that don't affect functionality.
+    This ensures a clean CLI experience while maintaining reliability.
 
+    Args:
+        verbose: If True, show all warnings for debugging. If False, suppress noisy warnings.
+
+    These warnings are suppressed because:
+    - absl logging warnings: Expected when initializing Google's internal logging system
+    - ALTS credentials warnings: Normal when running locally (not on GCP infrastructure)
+    - Protobuf deprecation warnings: From google-cloud-aiplatform library, don't affect functionality
+    - Google Cloud deprecation warnings: Common in SDK updates, don't break functionality
+    """
+    if not verbose:
+        # Suppress the absl logging warning about log initialization
+        warnings.filterwarnings("ignore", message="All log messages before absl::InitializeLog")
+        warnings.filterwarnings("ignore", message=".*absl::InitializeLog.*", module="absl")
+
+        # Suppress ALTS credentials warnings (these are expected when running locally)
+        warnings.filterwarnings("ignore", message="ALTS creds ignored")
+        warnings.filterwarnings("ignore", message=".*alts_credentials.*")
+
+        # Suppress protobuf deprecation warnings (from google-cloud-aiplatform)
+        warnings.filterwarnings("ignore", message=".*including_default_value_fields.*", module="proto")
+        warnings.filterwarnings("ignore", message=".*always_print_fields_with_no_presence.*", module="proto")
+
+        # Suppress common Google Cloud warnings that don't affect functionality
+        warnings.filterwarnings("ignore", message=".*DeprecationWarning.*", module="google.cloud")
+        warnings.filterwarnings("ignore", message=".*UserWarning.*", module="vertexai")
+
+        # Set logging level to WARNING to suppress INFO and DEBUG messages from Google libraries
+        logging.getLogger("google").setLevel(logging.WARNING)
+        logging.getLogger("google.cloud").setLevel(logging.WARNING)
+        logging.getLogger("google.auth").setLevel(logging.WARNING)
+        logging.getLogger("urllib3").setLevel(logging.WARNING)
+        logging.getLogger("absl").setLevel(logging.WARNING)
+
+        # Also suppress specific noisy loggers that might still appear
+        logging.getLogger("google.api_core").setLevel(logging.WARNING)
+        logging.getLogger("google.auth.transport").setLevel(logging.WARNING)
+
+        # Configure Python's default logging to reduce noise
+        logging.basicConfig(level=logging.WARNING, format='%(levelname)s: %(message)s')
+    else:
+        # In verbose mode, only suppress the most critical warnings but keep others for debugging
+        # Still suppress the most noisy ones that provide no value
+        warnings.filterwarnings("ignore", message="All log messages before absl::InitializeLog")
+        warnings.filterwarnings("ignore", message="ALTS creds ignored")
+
+        # Set logging to INFO level for more visibility while debugging
+        logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(name)s: %(message)s')
+
+
+def main():
+    # Parse arguments first to get verbose-warnings setting
     parser = argparse.ArgumentParser(description="Vertex AI Chat CLI (MCP tools)")
     parser.add_argument(
         "--servers", required=True, help="Path to YAML with MCP HTTP endpoints"
@@ -292,7 +322,16 @@ def main():
     parser.add_argument(
         "--timeout", type=float, default=45.0, help="Per-request timeout seconds"
     )
+    parser.add_argument(
+        "--verbose-warnings", action="store_true",
+        help="Show all warnings (useful for debugging, default: suppressed)"
+    )
     args = parser.parse_args()
+
+    # Set up clean warning handling before loading environment
+    setup_warning_filters(args.verbose_warnings)
+
+    load_dotenv()  # load .env values
 
     with open(args.system, "r", encoding="utf-8") as f:
         system_text = f.read()
