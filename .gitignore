@@ -1,0 +1,6 @@
+.env
+.venv/
+secrets/
+test.ipynb
+.DS_Store
+*.pyc
