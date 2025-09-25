@@ -299,7 +299,7 @@ def main():
 
     # Init Vertex AI with M2M credentials and custom endpoint
     model, project, location = init_vertex(system_text)
-    print(f"Vertex initialized: project={project}, location={location}, model={os.getenv('vertex')}")
+    print(f"Vertex initialized: project={project}, location={location}, model={os.getenv('model')}")
 
     # Run async chat loop
     try:
