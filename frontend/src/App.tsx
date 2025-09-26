@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import MarkdownMessage from './MarkdownMessage'
 import './App.css'
 
 type Message = { id: string; role: 'user' | 'model'; text: string; ts: string }
@@ -84,7 +85,9 @@ function App() {
         <section className="messages">
           {messages.map((m) => (
             <div key={m.id} className={`msg ${m.role === 'user' ? 'right' : 'left'}`}>
-              <div className="bubble">{m.text}</div>
+              <div className="bubble">
+                {m.role === 'model' ? <MarkdownMessage text={m.text} /> : m.text}
+              </div>
             </div>
           ))}
           {pendingReply && (

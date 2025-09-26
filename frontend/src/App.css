@@ -66,6 +66,15 @@ html, body, #root {
 }
 .msg.right .bubble { background: #111827; border-color: rgba(255,255,255,0.12); }
 
+/* Markdown styles inside bubbles */
+.md { color: #e5e7eb; }
+.md h1, .md h2, .md h3 { margin: 0.2rem 0 0.4rem; }
+.md p { margin: 0.4rem 0; }
+.md ul, .md ol { margin: 0.4rem 0 0.4rem 1.2rem; }
+.md code { background: rgba(255,255,255,0.08); padding: 0 4px; border-radius: 4px; }
+.md pre { background: #0a0f1a; padding: 8px 10px; border-radius: 6px; overflow-x: auto; }
+.md pre code { background: transparent; padding: 0; }
+
 .tools {
   background: rgba(255,255,255,0.03);
   border: 1px solid rgba(255,255,255,0.06);
