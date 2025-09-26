@@ -18,6 +18,7 @@ from chat_cli import (
     extract_function_calls,
     build_function_response_part,
     init_vertex,
+    ProposedCall,
 )
 from vertexai.generative_models import GenerativeModel, Tool
 from dotenv import load_dotenv
@@ -41,10 +42,11 @@ app.add_middleware(
 
 
 class Session:
-    def __init__(self, session_id: str, model: GenerativeModel, tools: List[Tool]):
+    def __init__(self, session_id: str, model: GenerativeModel, tools: List[Tool], tool_meta: Dict[str, Dict[str, Any]]):
         self.id = session_id
         self.model = model
         self.tools = tools
+        self.tool_meta = tool_meta
         self.chat = model.start_chat()
         self.queue: "asyncio.Queue[dict]" = asyncio.Queue()
         self.last_active = datetime.utcnow()
@@ -86,10 +88,25 @@ async def create_session():
     servers = load_servers_from_yaml(servers_yaml)
     async with MultiMCPClient(servers, timeout=45.0) as multi:
         catalog = await multi.list_tools()
+
+    tool_meta: Dict[str, Dict[str, Any]] = {}
+    for record in catalog:
+        server_label = record.server.replace("_", " ").title()
+        tool_label = None
+        if record.meta and isinstance(record.meta, dict):
+            tool_label = record.meta.get("title") or record.meta.get("label")
+        if not tool_label:
+            tool_label = record.name.split(".")[-1].replace("_", " ").title()
+        tool_meta[record.fqn] = {
+            "tool_name": tool_label,
+            "server_name": server_label,
+            "description": record.description,
+        }
+
     tools = [Tool(function_declarations=mcp_tools_to_vertex_functions(catalog))]
 
     sid = uuid.uuid4().hex
-    SESSIONS[sid] = Session(sid, model, tools)
+    SESSIONS[sid] = Session(sid, model, tools, tool_meta)
     return {"sessionId": sid, "createdAt": datetime.utcnow().isoformat()}
 
 
@@ -138,7 +155,7 @@ async def post_message(session_id: str, body: dict):
         try:
             resp = s.chat.send_message(text, tools=s.tools)
             proposed = extract_function_calls(resp)
-            unique: list[ProposedCall] = []
+            unique: List[ProposedCall] = []
             seen = set()
             for call in proposed:
                 key = (call.name, json.dumps(call.args, sort_keys=True))
@@ -157,13 +174,34 @@ async def post_message(session_id: str, body: dict):
             results = []
             async with MultiMCPClient(servers, timeout=45.0) as multi:
                 for call in proposed:
-                    await s.queue.put(_event("tool_call.started", {"toolFqn": call.name, "args": call.args}))
+                    meta = s.tool_meta.get(call.name, {})
+                    call_id = uuid.uuid4().hex
+                    await s.queue.put(_event("tool_call.started", {
+                        "callId": call_id,
+                        "toolFqn": call.name,
+                        "toolName": meta.get("tool_name", call.name.split(".")[-1]),
+                        "serverName": meta.get("server_name"),
+                        "args": call.args,
+                    }))
                     result = await multi.call_tool(call.name, call.args, timeout=45.0, raise_on_error=False)
                     results.append(result)
                     if result.get("is_error"):
-                        await s.queue.put(_event("tool_call.error", {"toolFqn": call.name, "message": result.get("content_text"), "structured_content": result.get("structured_content")}))
+                        await s.queue.put(_event("tool_call.error", {
+                            "callId": call_id,
+                            "toolFqn": call.name,
+                            "toolName": meta.get("tool_name", call.name.split(".")[-1]),
+                            "serverName": meta.get("server_name"),
+                            "message": result.get("content_text"),
+                            "structured_content": result.get("structured_content"),
+                        }))
                     else:
-                        await s.queue.put(_event("tool_call.result", {"toolFqn": call.name, "data": result.get("data")}))
+                        await s.queue.put(_event("tool_call.result", {
+                            "callId": call_id,
+                            "toolFqn": call.name,
+                            "toolName": meta.get("tool_name", call.name.split(".")[-1]),
+                            "serverName": meta.get("server_name"),
+                            "data": result.get("data"),
+                        }))
 
             # Provide function responses back to model and stream final message
             from vertexai.generative_models import Part
