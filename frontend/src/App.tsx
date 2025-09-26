@@ -9,6 +9,7 @@ function App() {
   const [messages, setMessages] = useState<Message[]>([])
   const [toolEvents, setToolEvents] = useState<ToolEvent[]>([])
   const [input, setInput] = useState('')
+  const [pendingReply, setPendingReply] = useState(false)
   const esRef = useRef<EventSource | null>(null)
 
   useEffect(() => {
@@ -22,8 +23,12 @@ function App() {
           const evt = JSON.parse(ev.data)
           if (evt.type === 'message.user') {
             setMessages((m) => m.concat({ id: crypto.randomUUID(), role: 'user', text: evt.payload.text, ts: evt.ts }))
+            setPendingReply(true)
           } else if (evt.type === 'message.model.final') {
             setMessages((m) => m.concat({ id: crypto.randomUUID(), role: 'model', text: evt.payload.text, ts: evt.ts }))
+            setPendingReply(false)
+          } else if (evt.type === 'status' && evt.payload?.level === 'error') {
+            setPendingReply(false)
           } else if (evt.type === 'tool_call.started') {
             setToolEvents((t) => t.concat({
               id: crypto.randomUUID(),
@@ -46,8 +51,19 @@ function App() {
 
   const send = async () => {
     if (!sessionId || !input.trim()) return
-    await fetch(`/api/session/${sessionId}/message`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text: input }) })
+    const text = input
     setInput('')
+    setPendingReply(true)
+    try {
+      await fetch(`/api/session/${sessionId}/message`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text }),
+      })
+    } catch (err) {
+      console.error(err)
+      setPendingReply(false)
+    }
   }
 
   const reset = async () => {
@@ -55,6 +71,7 @@ function App() {
     await fetch(`/api/session/${sessionId}/reset`, { method: 'POST' })
     setMessages([])
     setToolEvents([])
+    setPendingReply(false)
   }
 
   return (
@@ -70,6 +87,13 @@ function App() {
               <div className="bubble">{m.text}</div>
             </div>
           ))}
+          {pendingReply && (
+            <div className="msg left pending">
+              <div className="bubble pending-bubble">
+                <span className="dots"><span></span><span></span><span></span></span>
+              </div>
+            </div>
+          )}
         </section>
         <aside className="tools">
           <h3>Tool Calls</h3>
