@@ -150,23 +150,20 @@ async def post_message(session_id: str, body: dict):
                 await s.queue.put(_event("message.model.final", {"text": resp.text or ""}))
                 return
 
-            # Execute tools in parallel and emit events
+            # Execute tools sequentially so we can stream events in real time
             from mcp_client import MultiMCPClient  # local import to reuse config
             servers_yaml = os.getenv("servers", "servers.yaml")
             servers = load_servers_from_yaml(servers_yaml)
+            results = []
             async with MultiMCPClient(servers, timeout=45.0) as multi:
-                tasks = [
-                    multi.call_tool(call.name, call.args, timeout=45.0, raise_on_error=False)
-                    for call in proposed
-                ]
-                results = await asyncio.gather(*tasks)
-
-            for call, result in zip(proposed, results):
-                await s.queue.put(_event("tool_call.started", {"toolFqn": call.name, "args": call.args}))
-                if result.get("is_error"):
-                    await s.queue.put(_event("tool_call.error", {"toolFqn": call.name, "message": result.get("content_text"), "structured_content": result.get("structured_content")}))
-                else:
-                    await s.queue.put(_event("tool_call.result", {"toolFqn": call.name, "data": result.get("data")}))
+                for call in proposed:
+                    await s.queue.put(_event("tool_call.started", {"toolFqn": call.name, "args": call.args}))
+                    result = await multi.call_tool(call.name, call.args, timeout=45.0, raise_on_error=False)
+                    results.append(result)
+                    if result.get("is_error"):
+                        await s.queue.put(_event("tool_call.error", {"toolFqn": call.name, "message": result.get("content_text"), "structured_content": result.get("structured_content")}))
+                    else:
+                        await s.queue.put(_event("tool_call.result", {"toolFqn": call.name, "data": result.get("data")}))
 
             # Provide function responses back to model and stream final message
             from vertexai.generative_models import Part
