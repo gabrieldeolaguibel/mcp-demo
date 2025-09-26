@@ -63,14 +63,15 @@ html, body, #root {
   border-radius: 12px;
   background: #1f2937;
   border: 1px solid rgba(255,255,255,0.08);
+  text-align: left; /* ensure content inside bubble is left-aligned */
 }
 .msg.right .bubble { background: #111827; border-color: rgba(255,255,255,0.12); }
 
 /* Markdown styles inside bubbles */
 .md { color: #e5e7eb; }
-.md h1, .md h2, .md h3 { margin: 0.2rem 0 0.4rem; }
-.md p { margin: 0.4rem 0; }
-.md ul, .md ol { margin: 0.4rem 0 0.4rem 1.2rem; }
+.md h1, .md h2, .md h3 { margin: 0.2rem 0 0.4rem; text-align: left; }
+.md p { margin: 0.4rem 0; text-align: left; }
+.md ul, .md ol { margin: 0.4rem 0 0.4rem 1.2rem; text-align: left; }
 .md code { background: rgba(255,255,255,0.08); padding: 0 4px; border-radius: 4px; }
 .md pre { background: #0a0f1a; padding: 8px 10px; border-radius: 6px; overflow-x: auto; }
 .md pre code { background: transparent; padding: 0; }
@@ -134,7 +135,7 @@ html, body, #root {
   max-width: 1280px;
   margin: 0 auto;
   padding: 2rem;
-  text-align: center;
+  text-align: left; /* ensure descendants default to left-aligned */
 }
 
 .logo {
