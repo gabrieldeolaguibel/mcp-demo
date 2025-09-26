@@ -138,6 +138,14 @@ async def post_message(session_id: str, body: dict):
         try:
             resp = s.chat.send_message(text, tools=s.tools)
             proposed = extract_function_calls(resp)
+            unique: list[ProposedCall] = []
+            seen = set()
+            for call in proposed:
+                key = (call.name, json.dumps(call.args, sort_keys=True))
+                if key not in seen:
+                    seen.add(key)
+                    unique.append(call)
+            proposed = unique
             if not proposed:
                 await s.queue.put(_event("message.model.final", {"text": resp.text or ""}))
                 return
